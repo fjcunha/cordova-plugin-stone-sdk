@@ -238,16 +238,18 @@ public class StoneSDK extends CordovaPlugin {
         System.out.println("Opcao Selecionada Cancel");
 
         String transactionCode = data.getString(0);
-        System.out.println("optSelected: " + transactionCode);
+        //System.out.println("optSelected: " + transactionCode);
 
         // Pega o id da transacao selecionada.
-        String[] parts = transactionCode.split("_");
+        //String[] parts = transactionCode.split("_");
 
-        String idOptSelected = parts[0];
-        System.out.println("idOptSelected: " + idOptSelected);
+        //String idOptSelected = parts[0];
+        //System.out.println("idOptSelected: " + idOptSelected);
+      System.out.println("idOptSelected: " + transactionCode);
 
         //l�gica do cancelamento
-        final int transacionId = Integer.parseInt(idOptSelected);
+        //final int transacionId = Integer.parseInt(idOptSelected);
+        final int transacionId = Integer.parseInt(transactionCode);
 
         final CancellationProvider cancellationProvider = new CancellationProvider(StoneSDK.this.cordova.getActivity(), transacionId, Stone.getUserModel(0));
         cancellationProvider.setWorkInBackground(false); // para dar feedback ao usuario ou nao.
