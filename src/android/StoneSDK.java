@@ -1,415 +1,384 @@
-/*
-       Licensed to the Apache Software Foundation (ASF) under one
-       or more contributor license agreements.  See the NOTICE file
-       distributed with this work for additional information
-       regarding copyright ownership.  The ASF licenses this file
-       to you under the Apache License, Version 2.0 (the
-       "License"); you may not use this file except in compliance
-       with the License.  You may obtain a copy of the License at
+package br.com.stone.cordova.sdk;
 
-         http://www.apache.org/licenses/LICENSE-2.0
+import android.bluetooth.BluetoothAdapter;
+import android.bluetooth.BluetoothDevice;
+import android.widget.Toast;
 
-       Unless required by applicable law or agreed to in writing,
-       software distributed under the License is distributed on an
-       "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
-       KIND, either express or implied.  See the License for the
-       specific language governing permissions and limitations
-       under the License.
-*/
-
-package org.apache.cordova.splashscreen;
-
-import stone.application.StoneStart;
-import android.app.Dialog;
-import android.app.ProgressDialog;
-import android.content.Context;
-import android.content.DialogInterface;
-import android.content.res.Configuration;
-import android.content.res.ColorStateList;
-import android.graphics.Color;
-import android.graphics.drawable.ColorDrawable;
-import android.os.Handler;
-import android.view.Display;
-import android.view.Gravity;
-import android.view.View;
-import android.view.ViewGroup.LayoutParams;
-import android.view.WindowManager;
-import android.view.animation.Animation;
-import android.view.animation.AlphaAnimation;
-import android.view.animation.DecelerateInterpolator;
-import android.widget.ImageView;
-import android.widget.LinearLayout;
-import android.widget.ProgressBar;
-import android.widget.RelativeLayout;
-
-import org.apache.cordova.CallbackContext;
-import org.apache.cordova.CordovaPlugin;
-import org.apache.cordova.CordovaWebView;
+import org.apache.cordova.*;
 import org.json.JSONArray;
 import org.json.JSONException;
+import org.json.JSONObject;
 
-public class SplashScreen extends CordovaPlugin {
-    private static final String LOG_TAG = "SplashScreen";
-    // Cordova 3.x.x has a copy of this plugin bundled with it (SplashScreenInternal.java).
-    // Enable functionality only if running on 4.x.x.
-    private static final boolean HAS_BUILT_IN_SPLASH_SCREEN = Integer.valueOf(CordovaWebView.CORDOVA_VERSION.split("\\.")[0]) < 4;
-    private static final int DEFAULT_SPLASHSCREEN_DURATION = 3000;
-    private static final int DEFAULT_FADE_DURATION = 500;
-    private static Dialog splashDialog;
-    private static ProgressDialog spinnerDialog;
-    private static boolean firstShow = true;
-    private static boolean lastHideAfterDelay; // https://issues.apache.org/jira/browse/CB-9094
+import java.util.ArrayList;
+import java.util.List;
+import java.util.Set;
 
-    /**
-     * Displays the splash drawable.
-     */
-    private ImageView splashImageView;
+import stone.application.StoneStart;
+import stone.application.enums.ErrorsEnum;
+import stone.application.enums.InstalmentTransactionEnum;
+import stone.application.enums.TypeOfTransactionEnum;
+import stone.application.interfaces.StoneCallbackInterface;
+import stone.database.transaction.TransactionDAO;
+import stone.database.transaction.TransactionObject;
+import stone.providers.ActiveApplicationProvider;
+import stone.providers.BluetoothConnectionProvider;
+import stone.providers.CancellationProvider;
+import stone.providers.TransactionProvider;
+import stone.user.UserModel;
+import stone.utils.GlobalInformations;
+import stone.utils.PinpadObject;
+import stone.utils.Stone;
+import stone.utils.StoneTransaction;
+import stone.cache.ApplicationCache;
+import stone.environment.Environment;
 
-    /**
-     * Remember last device orientation to detect orientation changes.
-     */
-    private int orientation;
+public class StoneSDK extends CordovaPlugin {
 
-    // Helper to be compile-time compatible with both Cordova 3.x and 4.x.
-    private View getView() {
-        try {
-            return (View)webView.getClass().getMethod("getView").invoke(webView);
-        } catch (Exception e) {
-            return (View)webView;
-        }
-    }
+    static BluetoothAdapter mBluetoothAdapter = BluetoothAdapter.getDefaultAdapter();
 
-    private int getSplashId() {
-        int drawableId = 0;
-        String splashResource = preferences.getString("SplashScreen", "screen");
-        if (splashResource != null) {
-            drawableId = cordova.getActivity().getResources().getIdentifier(splashResource, "drawable", cordova.getActivity().getClass().getPackage().getName());
-            if (drawableId == 0) {
-                drawableId = cordova.getActivity().getResources().getIdentifier(splashResource, "drawable", cordova.getActivity().getPackageName());
+    private static final String DEVICE = "device";
+    private static final String DEVICE_SELECTED = "deviceSelected";
+    private static final String SET_ENVIRONMENT = "setEnvironment";
+    private static final String TRANSACTION = "transaction";
+    private static final String TRANSACTION_CANCEL = "transactionCancel";
+    private static final String TRANSACTION_LIST = "transactionList";
+    private static final String VALIDATION = "validation";
+
+    public boolean execute(String action, JSONArray data, CallbackContext callbackContext) throws JSONException {
+
+        if (action.equals(DEVICE)) {
+            turnBluetoothOn();
+            bluetoothList(callbackContext);
+            return true;
+        } else if (action.equals(DEVICE_SELECTED)) {
+            bluetoothSelected(data, callbackContext);
+            return true;
+        } else if (action.equals(TRANSACTION)) {
+            transaction(data, callbackContext);
+            return true;
+        } else if (action.equals(TRANSACTION_CANCEL)) {
+            transactionCancel(data, callbackContext);
+            return true;
+        } else if (action.equals(TRANSACTION_LIST)) {
+            transactionList(callbackContext);
+            return true;
+        } else if (action.equals(VALIDATION)) {
+            List<UserModel> user = StoneStart.init(this.cordova.getActivity());
+            if (user == null) {
+                stoneCodeValidation(data, callbackContext);
+                return true;
+            } else {
+                Toast.makeText(StoneSDK.this.cordova.getActivity(), "StoneCode ja cadastrado", Toast.LENGTH_SHORT).show();
+                return true;
             }
-        }
-        return drawableId;
-    }
-
-    @Override
-    protected void pluginInitialize() {
-        if (HAS_BUILT_IN_SPLASH_SCREEN) {
-            return;
-        }
-        // Make WebView invisible while loading URL
-        // CB-11326 Ensure we're calling this on UI thread
-        cordova.getActivity().runOnUiThread(new Runnable() {
-            @Override
-            public void run() {
-                getView().setVisibility(View.INVISIBLE);
-                StoneStart.init(SplashScreen.this.cordova.getActivity());
-            }
-        });
-        int drawableId = getSplashId();
-
-        // Save initial orientation.
-        orientation = cordova.getActivity().getResources().getConfiguration().orientation;
-
-        if (firstShow) {
-            boolean autoHide = preferences.getBoolean("AutoHideSplashScreen", true);
-            showSplashScreen(autoHide);
-        }
-
-        if (preferences.getBoolean("SplashShowOnlyFirstTime", true)) {
-            firstShow = false;
-        }
-    }
-
-    /**
-     * Shorter way to check value of "SplashMaintainAspectRatio" preference.
-     */
-    private boolean isMaintainAspectRatio () {
-        return preferences.getBoolean("SplashMaintainAspectRatio", false);
-    }
-
-    private int getFadeDuration () {
-        int fadeSplashScreenDuration = preferences.getBoolean("FadeSplashScreen", true) ?
-            preferences.getInteger("FadeSplashScreenDuration", DEFAULT_FADE_DURATION) : 0;
-
-        if (fadeSplashScreenDuration < 30) {
-            // [CB-9750] This value used to be in decimal seconds, so we will assume that if someone specifies 10
-            // they mean 10 seconds, and not the meaningless 10ms
-            fadeSplashScreenDuration *= 1000;
-        }
-
-        return fadeSplashScreenDuration;
-    }
-
-    @Override
-    public void onPause(boolean multitasking) {
-        if (HAS_BUILT_IN_SPLASH_SCREEN) {
-            return;
-        }
-        // hide the splash screen to avoid leaking a window
-        this.removeSplashScreen(true);
-    }
-
-    @Override
-    public void onDestroy() {
-        if (HAS_BUILT_IN_SPLASH_SCREEN) {
-            return;
-        }
-        // hide the splash screen to avoid leaking a window
-        this.removeSplashScreen(true);
-        // If we set this to true onDestroy, we lose track when we go from page to page!
-        //firstShow = true;
-    }
-
-    @Override
-    public boolean execute(String action, JSONArray args, CallbackContext callbackContext) throws JSONException {
-        if (action.equals("hide")) {
-            cordova.getActivity().runOnUiThread(new Runnable() {
-                public void run() {
-                    webView.postMessage("splashscreen", "hide");
-                }
-            });
-        } else if (action.equals("show")) {
-            cordova.getActivity().runOnUiThread(new Runnable() {
-                public void run() {
-                    webView.postMessage("splashscreen", "show");
-                }
-            });
+        } else if (action.equals(SET_ENVIRONMENT)) {
+            setEnvironment(data);
+            return true;
         } else {
             return false;
         }
-
-        callbackContext.success();
-        return true;
     }
 
-    @Override
-    public Object onMessage(String id, Object data) {
-        if (HAS_BUILT_IN_SPLASH_SCREEN) {
-            return null;
-        }
-        if ("splashscreen".equals(id)) {
-            if ("hide".equals(data.toString())) {
-                this.removeSplashScreen(false);
-            } else {
-                this.showSplashScreen(false);
-            }
-        } else if ("spinner".equals(id)) {
-            if ("stop".equals(data.toString())) {
-                getView().setVisibility(View.VISIBLE);
-            }
-        } else if ("onReceivedError".equals(id)) {
-            this.spinnerStop();
-        }
-        return null;
-    }
-
-    // Don't add @Override so that plugin still compiles on 3.x.x for a while
-    public void onConfigurationChanged(Configuration newConfig) {
-        if (newConfig.orientation != orientation) {
-            orientation = newConfig.orientation;
-
-            // Splash drawable may change with orientation, so reload it.
-            if (splashImageView != null) {
-                int drawableId = getSplashId();
-                if (drawableId != 0) {
-                    splashImageView.setImageDrawable(cordova.getActivity().getResources().getDrawable(drawableId));
-                }
-            }
+    public void turnBluetoothOn() {
+        try {
+            mBluetoothAdapter.enable();
+            do {
+            } while (!mBluetoothAdapter.isEnabled());
+        } catch (Exception e) {
+            e.printStackTrace();
         }
     }
 
-    private void removeSplashScreen(final boolean forceHideImmediately) {
-        cordova.getActivity().runOnUiThread(new Runnable() {
-            public void run() {
-                if (splashDialog != null && splashDialog.isShowing()) {
-                    final int fadeSplashScreenDuration = getFadeDuration();
-                    // CB-10692 If the plugin is being paused/destroyed, skip the fading and hide it immediately
-                    if (fadeSplashScreenDuration > 0 && forceHideImmediately == false) {
-                        AlphaAnimation fadeOut = new AlphaAnimation(1, 0);
-                        fadeOut.setInterpolator(new DecelerateInterpolator());
-                        fadeOut.setDuration(fadeSplashScreenDuration);
+    private void bluetoothList(CallbackContext callbackContext) throws JSONException {
+        // Lista de Pinpads para passar para o BluetoothConnectionProvider.
+        BluetoothAdapter bluetoothAdapter = BluetoothAdapter.getDefaultAdapter();
+        Set<BluetoothDevice> pairedDevices = bluetoothAdapter.getBondedDevices();
 
-                        splashImageView.setAnimation(fadeOut);
-                        splashImageView.startAnimation(fadeOut);
+        JSONArray arrayList = new JSONArray();
 
-                        fadeOut.setAnimationListener(new Animation.AnimationListener() {
-                            @Override
-                            public void onAnimationStart(Animation animation) {
-                                spinnerStop();
-                            }
+        // Lista todos os dispositivos pareados.
+        if (pairedDevices.size() > 0) {
+            for (BluetoothDevice device : pairedDevices) {
+                String name = device.getName();
+                String address = device.getAddress();
+                arrayList.put(name + "_" + address);
+            }
+            callbackContext.success(arrayList);
+        }
+    }
 
-                            @Override
-                            public void onAnimationEnd(Animation animation) {
-                                if (splashDialog != null && splashDialog.isShowing()) {
-                                    splashDialog.dismiss();
-                                    splashDialog = null;
-                                    splashImageView = null;
-                                }
-                            }
+    private void bluetoothSelected(JSONArray data, final CallbackContext callbackContext) throws JSONException {
+        // Pega o pinpad selecionado.
+        String arrayList = data.getString(0);
 
-                            @Override
-                            public void onAnimationRepeat(Animation animation) {
-                            }
-                        });
-                    } else {
-                        spinnerStop();
-                        splashDialog.dismiss();
-                        splashDialog = null;
-                        splashImageView = null;
+        String[] parts = arrayList.split("_");
+
+        String name = parts[0];
+        String macAddress = parts[1];
+
+        PinpadObject pinpad = new PinpadObject(name, macAddress, false);
+
+        // Passa o pinpad selecionado para o provider de conexao bluetooth.
+        BluetoothConnectionProvider bluetoothConnectionProvider = new BluetoothConnectionProvider(StoneSDK.this.cordova.getActivity(), pinpad);
+        bluetoothConnectionProvider.setDialogMessage("Criando conexao com o pinpad selecionado"); // Mensagem exibida do dialog.
+        bluetoothConnectionProvider.setWorkInBackground(false); // Informa que havera um feedback para o usuario.
+        bluetoothConnectionProvider.setConnectionCallback(new StoneCallbackInterface() {
+
+            public void onSuccess() {
+                // Toast.makeText(StoneSDK.this.cordova.getActivity(), "Pinpad conectado", Toast.LENGTH_SHORT).show();
+                callbackContext.success();
+            }
+
+            public void onError() {
+                // Toast.makeText(StoneSDK.this.cordova.getActivity(), "Erro durante a conexao. Verifique a lista de erros do provider para mais informacoes", Toast.LENGTH_SHORT).show();
+                // callbackContext.error("Erro durante a conexao. Verifique a lista de erros do provider para mais informacoes");
+                callbackContext.error(bluetoothConnectionProvider.getListOfErrors().toString());
+            }
+
+        });
+        bluetoothConnectionProvider.execute(); // Executa o provider de conexao bluetooth.
+    }
+
+    private void stoneCodeValidation(JSONArray data, final CallbackContext callbackContext) throws JSONException {
+        List<String> stoneCodeList = new ArrayList<String>();
+
+        // Adicione seu Stonecode abaixo, como string.
+        stoneCodeList.add(data.getString(0)); // coloque seu Stone Code aqui
+
+        final ActiveApplicationProvider activeApplicationProvider = new ActiveApplicationProvider(this.cordova.getActivity(), stoneCodeList);
+        activeApplicationProvider.setDialogMessage("Ativando o aplicativo...");
+        activeApplicationProvider.setDialogTitle("Aguarde");
+
+        //Essa linha estava gerando erro no build, porem nao sei a necessidade dessa parte... Parece que ja tem implementado acima...
+        //activeApplicationProvider.setActivity(this.cordova.getActivity());
+
+        activeApplicationProvider.setWorkInBackground(false); // informa se este provider ira rodar em background ou nao
+        activeApplicationProvider.setConnectionCallback(new StoneCallbackInterface() {
+
+            /* Sempre que utilizar um provider, intancie esta Interface.
+             * Ela ira lhe informar se o provider foi executado com sucesso ou nao
+             */
+
+            /* Metodo chamado se for executado sem erros */
+            public void onSuccess() {
+                Toast.makeText(StoneSDK.this.cordova.getActivity(), "Ativado com sucesso, iniciando o aplicativo", Toast.LENGTH_SHORT).show();
+                callbackContext.success("Ativado com sucesso");
+            }
+
+            /* Metodo chamado caso ocorra alguma excecao */
+            public void onError() {
+                Toast.makeText(StoneSDK.this.cordova.getActivity(), "Erro na ativacao do aplicativo, verifique a lista de erros do provider", Toast.LENGTH_SHORT).show();
+                callbackContext.error(activeApplicationProvider.getListOfErrors().toString());
+            }
+
+        });
+        activeApplicationProvider.execute();
+    }
+
+    private void setEnvironment(JSONArray data) throws JSONException {
+        String env = data.getString(0);
+        Stone.setEnvironment(Environment.valueOf(env));
+    }
+
+    private void transactionList(CallbackContext callbackContext) {
+        // acessa todas as transacoes do banco de dados
+        TransactionDAO transactionDAO = new TransactionDAO(StoneSDK.this.cordova.getActivity());
+
+        // cria uma lista com todas as transacoes
+        List<TransactionObject> transactionObjects = transactionDAO.getAllTransactionsOrderByIdDesc();
+
+        // exibe todas as transacoes (neste caso valor e status) para o usuario
+        JSONArray arrayList = new JSONArray();
+
+        for (TransactionObject list : transactionObjects) {
+            JSONObject obj = new JSONObject();
+
+            try{
+                obj.put("idFromBase", String.valueOf(list.getIdFromBase()));
+                obj.put("amount",  list.getAmount());
+                obj.put("requestId",   String.valueOf(list.getRequestId()));
+                obj.put("emailSent",   String.valueOf(list.getEmailSent()));
+                obj.put("timeToPassTransaction",   String.valueOf(list.getTimeToPassTransaction()));
+                obj.put("initiatorTransactionKey",   String.valueOf(list.getInitiatorTransactionKey()));
+                obj.put("recipientTransactionIdentification",   String.valueOf(list.getRecipientTransactionIdentification()));
+                obj.put("cardHolderNumber",   String.valueOf(list.getCardHolderNumber()));
+                obj.put("cardHolderName",   String.valueOf(list.getCardHolderName()).trim());
+                obj.put("date",   String.valueOf(list.getDate()));
+                obj.put("time",   String.valueOf(list.getTime()));
+                obj.put("aid",   String.valueOf(list.getAid()));
+                obj.put("arcq",   String.valueOf(list.getArcq()));
+                obj.put("authorizationCode",   String.valueOf(list.getAuthorizationCode()));
+                obj.put("iccRelatedData",   String.valueOf(list.getIccRelatedData()));
+                obj.put("transactionReference",   String.valueOf(list.getTransactionReference()));
+                obj.put("actionCode",   String.valueOf(list.getActionCode()));
+                obj.put("commandActionCode",   String.valueOf(list.getCommandActionCode()));
+                obj.put("pinpadUsed",   String.valueOf(list.getPinpadUsed()));
+                obj.put("userModelSale",   String.valueOf(list.getUserModelSale()));
+                obj.put("cne",   String.valueOf(list.getCne()));
+                obj.put("cvm",   String.valueOf(list.getCvm()));
+                obj.put("serviceCode",   String.valueOf(list.getServiceCode()));
+                obj.put("entryMode",   String.valueOf(list.getEntryMode()));
+                obj.put("cardBrand",   String.valueOf(list.getCardBrand()));
+                obj.put("instalmentTransaction",   String.valueOf(list.getInstalmentTransaction()));
+                obj.put("transactionStatus",   String.valueOf(list.getTransactionStatus()));
+                obj.put("instalmentType",   String.valueOf(list.getInstalmentType()));
+                obj.put("typeOfTransactionEnum",   String.valueOf(list.getTypeOfTransactionEnum()));
+                obj.put("cancellationDate",   String.valueOf(list.getCancellationDate()));
+
+                arrayList.put(obj);
+
+            }catch (JSONException e){
+                e.printStackTrace();
+            }
+        }
+        callbackContext.success(arrayList);
+    }
+
+    private void transactionCancel(JSONArray data, final CallbackContext callbackContext) throws JSONException {
+        System.out.println("Opcao Selecionada Cancel");
+
+        String transactionCode = data.getString(0);
+        System.out.println("optSelected: " + transactionCode);
+
+        // Pega o id da transacao selecionada.
+        String[] parts = transactionCode.split("_");
+
+        String idOptSelected = parts[0];
+        System.out.println("idOptSelected: " + idOptSelected);
+
+        //l�gica do cancelamento
+        final int transacionId = Integer.parseInt(idOptSelected);
+
+        final CancellationProvider cancellationProvider = new CancellationProvider(StoneSDK.this.cordova.getActivity(), transacionId, Stone.getUserModel(0));
+        cancellationProvider.setWorkInBackground(false); // para dar feedback ao usuario ou nao.
+        //cancellationProvider.setDialogMessage("Cancelando...");
+        cancellationProvider.setConnectionCallback(new StoneCallbackInterface() { // chamada de retorno.
+            public void onSuccess() {
+                Toast.makeText(StoneSDK.this.cordova.getActivity(), cancellationProvider.getMessageFromAuthorize(), Toast.LENGTH_SHORT).show();
+                callbackContext.success("Cancelado com sucesso");
+            }
+
+            public void onError() {
+                Toast.makeText(StoneSDK.this.cordova.getActivity(), "Um erro ocorreu durante o cancelamento com a transacao de id: " + transacionId, Toast.LENGTH_SHORT).show();
+                callbackContext.error(cancellationProvider.getListOfErrors().toString() + " Erro ocorreu durante o cancelamento da transacao de id: " + transacionId);
+            }
+        });
+        cancellationProvider.execute();
+    }
+
+    private void transaction(JSONArray data, final CallbackContext callbackContext) throws JSONException {
+
+        String amount = data.getString(0);
+        final  String success_message = data.getString(3);
+        System.out.println("getAmount: " + amount);
+
+        // Cria o objeto de transacao. Usar o "GlobalInformations.getPinpadFromListAt"
+        // significa que devera estar conectado com ao menos um pinpad, pois o metodo
+        // cria uma lista de conectados e conecta com quem estiver na posicao "0".
+        StoneTransaction stoneTransaction = new StoneTransaction(Stone.getPinpadFromListAt(0));
+
+        // A seguir deve-se popular o objeto.
+        stoneTransaction.setAmount(amount);
+        stoneTransaction.setEmailClient(null);
+        stoneTransaction.setRequestId(null);
+        stoneTransaction.setUserModel(Stone.getUserModel(0));
+
+        // Verifica a forma de pagamento selecionada.
+        String method = data.getString(1);
+        System.out.println("getMethod: " + method);
+
+        // Numero de parcelas
+        String instalments = data.getString(2);
+        System.out.println("getInstalments: " + instalments);
+
+        if (method.equals("DEBIT")) {
+            stoneTransaction.setInstalmentTransactionEnum(InstalmentTransactionEnum.getAt(0));
+            stoneTransaction.setTypeOfTransaction(TypeOfTransactionEnum.DEBIT);
+        } else if (method.equals("CREDIT")) {
+            // Informa a quantidade de parcelas.
+            stoneTransaction.setInstalmentTransactionEnum(InstalmentTransactionEnum.valueOf(instalments));
+            stoneTransaction.setTypeOfTransaction(TypeOfTransactionEnum.CREDIT);
+        } else {
+            System.out.println("Empty Payment Method");
+        }
+
+        // Processo para envio da transacao.
+        final TransactionProvider provider = new TransactionProvider(StoneSDK.this.cordova.getActivity(), stoneTransaction, Stone.getPinpadFromListAt(0));
+
+        provider.setWorkInBackground(true);
+
+        provider.setConnectionCallback(new StoneCallbackInterface() {
+            public void onSuccess() {
+                // acessa todas as transacoes do banco de dados
+                TransactionDAO transactionDAO = new TransactionDAO(StoneSDK.this.cordova.getActivity());
+
+                // cria uma lista com todas as transacoes
+                List<TransactionObject> transactionObjects = transactionDAO.getAllTransactionsOrderByIdDesc();
+
+                // exibe todas as transacoes (neste caso valor e status) para o usuario
+                JSONArray arrayList = new JSONArray();
+
+                //Transforma a lista e objetos em json
+                for (TransactionObject list : transactionObjects) {
+
+                    JSONObject obj = new JSONObject();
+
+                    try{
+                        obj.put("idFromBase", String.valueOf(list.getIdFromBase()));
+                        obj.put("amount",  list.getAmount());
+                        obj.put("requestId",   String.valueOf(list.getRequestId()));
+                        obj.put("emailSent",   String.valueOf(list.getEmailSent()));
+                        obj.put("timeToPassTransaction",   String.valueOf(list.getTimeToPassTransaction()));
+                        obj.put("initiatorTransactionKey",   String.valueOf(list.getInitiatorTransactionKey()));
+                        obj.put("recipientTransactionIdentification",   String.valueOf(list.getRecipientTransactionIdentification()));
+                        obj.put("cardHolderNumber",   String.valueOf(list.getCardHolderNumber()));
+                        obj.put("cardHolderName",   String.valueOf(list.getCardHolderName()));
+                        obj.put("date",   String.valueOf(list.getDate()));
+                        obj.put("time",   String.valueOf(list.getTime()));
+                        obj.put("aid",   String.valueOf(list.getAid()));
+                        obj.put("arcq",   String.valueOf(list.getArcq()));
+                        obj.put("authorizationCode",   String.valueOf(list.getAuthorizationCode()));
+                        obj.put("iccRelatedData",   String.valueOf(list.getIccRelatedData()));
+                        obj.put("transactionReference",   String.valueOf(list.getTransactionReference()));
+                        obj.put("actionCode",   String.valueOf(list.getActionCode()));
+                        obj.put("commandActionCode",   String.valueOf(list.getCommandActionCode()));
+                        obj.put("pinpadUsed",   String.valueOf(list.getPinpadUsed()));
+                        obj.put("userModelSale",   String.valueOf(list.getUserModelSale()));
+                        obj.put("cne",   String.valueOf(list.getCne()));
+                        obj.put("cvm",   String.valueOf(list.getCvm()));
+                        obj.put("serviceCode",   String.valueOf(list.getServiceCode()));
+                        obj.put("entryMode",   String.valueOf(list.getEntryMode()));
+                        obj.put("cardBrand",   String.valueOf(list.getCardBrand()));
+                        obj.put("instalmentTransaction",   String.valueOf(list.getInstalmentTransaction()));
+                        obj.put("transactionStatus",   String.valueOf(list.getTransactionStatus()));
+                        obj.put("instalmentType",   String.valueOf(list.getInstalmentType()));
+                        obj.put("typeOfTransactionEnum",   String.valueOf(list.getTypeOfTransactionEnum()));
+                        obj.put("cancellationDate",   String.valueOf(list.getCancellationDate()));
+
+                        arrayList.put(obj);
+
+                    }catch (JSONException e){
+                        e.printStackTrace();
                     }
                 }
+
+                //retorna a ultima transacao efetuada
+                try{
+                    callbackContext.success(arrayList.getJSONObject(0));
+                }catch (JSONException e){
+                    e.printStackTrace();
+                }
+
+                //Mostra o toast com a mensagem personalizada
+                Toast.makeText(StoneSDK.this.cordova.getActivity(), success_message, Toast.LENGTH_SHORT).show();
+            }
+
+            public void onError() {
+                Toast.makeText(StoneSDK.this.cordova.getActivity(), provider.getMessageFromAuthorize(), Toast.LENGTH_SHORT).show();
+                callbackContext.error(provider.getListOfErrors().toString());
             }
         });
+        provider.execute();
     }
 
-    /**
-     * Shows the splash screen over the full Activity
-     */
-    @SuppressWarnings("deprecation")
-    private void showSplashScreen(final boolean hideAfterDelay) {
-        final int splashscreenTime = preferences.getInteger("SplashScreenDelay", DEFAULT_SPLASHSCREEN_DURATION);
-        final int drawableId = getSplashId();
-
-        final int fadeSplashScreenDuration = getFadeDuration();
-        final int effectiveSplashDuration = Math.max(0, splashscreenTime - fadeSplashScreenDuration);
-
-        lastHideAfterDelay = hideAfterDelay;
-
-        // Prevent to show the splash dialog if the activity is in the process of finishing
-        if (cordova.getActivity().isFinishing()) {
-            return;
-        }
-        // If the splash dialog is showing don't try to show it again
-        if (splashDialog != null && splashDialog.isShowing()) {
-            return;
-        }
-        if (drawableId == 0 || (splashscreenTime <= 0 && hideAfterDelay)) {
-            return;
-        }
-
-        cordova.getActivity().runOnUiThread(new Runnable() {
-            public void run() {
-                // Get reference to display
-                Display display = cordova.getActivity().getWindowManager().getDefaultDisplay();
-                Context context = webView.getContext();
-
-                // Use an ImageView to render the image because of its flexible scaling options.
-                splashImageView = new ImageView(context);
-                splashImageView.setImageResource(drawableId);
-                LayoutParams layoutParams = new LinearLayout.LayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.MATCH_PARENT);
-                splashImageView.setLayoutParams(layoutParams);
-
-                splashImageView.setMinimumHeight(display.getHeight());
-                splashImageView.setMinimumWidth(display.getWidth());
-
-                // TODO: Use the background color of the webView's parent instead of using the preference.
-                splashImageView.setBackgroundColor(preferences.getInteger("backgroundColor", Color.BLACK));
-
-                if (isMaintainAspectRatio()) {
-                    // CENTER_CROP scale mode is equivalent to CSS "background-size:cover"
-                    splashImageView.setScaleType(ImageView.ScaleType.CENTER_CROP);
-                }
-                else {
-                    // FIT_XY scales image non-uniformly to fit into image view.
-                    splashImageView.setScaleType(ImageView.ScaleType.FIT_XY);
-                }
-
-                // Create and show the dialog
-                splashDialog = new Dialog(context, android.R.style.Theme_Translucent_NoTitleBar);
-                // check to see if the splash screen should be full screen
-                if ((cordova.getActivity().getWindow().getAttributes().flags & WindowManager.LayoutParams.FLAG_FULLSCREEN)
-                        == WindowManager.LayoutParams.FLAG_FULLSCREEN) {
-                    splashDialog.getWindow().setFlags(WindowManager.LayoutParams.FLAG_FULLSCREEN,
-                            WindowManager.LayoutParams.FLAG_FULLSCREEN);
-                }
-                splashDialog.setContentView(splashImageView);
-                splashDialog.setCancelable(false);
-                splashDialog.show();
-
-                if (preferences.getBoolean("ShowSplashScreenSpinner", true)) {
-                    spinnerStart();
-                }
-
-                // Set Runnable to remove splash screen just in case
-                if (hideAfterDelay) {
-                    final Handler handler = new Handler();
-                    handler.postDelayed(new Runnable() {
-                        public void run() {
-                            if (lastHideAfterDelay) {
-                                removeSplashScreen(false);
-                            }
-                        }
-                    }, effectiveSplashDuration);
-                }
-            }
-        });
-    }
-
-    // Show only spinner in the center of the screen
-    private void spinnerStart() {
-        cordova.getActivity().runOnUiThread(new Runnable() {
-            public void run() {
-                spinnerStop();
-
-                spinnerDialog = new ProgressDialog(webView.getContext());
-                spinnerDialog.setOnCancelListener(new DialogInterface.OnCancelListener() {
-                    public void onCancel(DialogInterface dialog) {
-                        spinnerDialog = null;
-                    }
-                });
-
-                spinnerDialog.setCancelable(false);
-                spinnerDialog.setIndeterminate(true);
-
-                RelativeLayout centeredLayout = new RelativeLayout(cordova.getActivity());
-                centeredLayout.setGravity(Gravity.CENTER);
-                centeredLayout.setLayoutParams(new RelativeLayout.LayoutParams(LayoutParams.WRAP_CONTENT, LayoutParams.WRAP_CONTENT));
-
-                ProgressBar progressBar = new ProgressBar(webView.getContext());
-                RelativeLayout.LayoutParams layoutParams = new RelativeLayout.LayoutParams(LayoutParams.WRAP_CONTENT, LayoutParams.WRAP_CONTENT);
-                layoutParams.addRule(RelativeLayout.CENTER_IN_PARENT, RelativeLayout.TRUE);
-                progressBar.setLayoutParams(layoutParams);
-
-                if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.LOLLIPOP) {
-                    String colorName = preferences.getString("SplashScreenSpinnerColor", null);
-                    if(colorName != null){
-                        int[][] states = new int[][] {
-                            new int[] { android.R.attr.state_enabled}, // enabled
-                            new int[] {-android.R.attr.state_enabled}, // disabled
-                            new int[] {-android.R.attr.state_checked}, // unchecked
-                            new int[] { android.R.attr.state_pressed}  // pressed
-                        };
-                        int progressBarColor = Color.parseColor(colorName);
-                        int[] colors = new int[] {
-                            progressBarColor,
-                            progressBarColor,
-                            progressBarColor,
-                            progressBarColor
-                        };
-                        ColorStateList colorStateList = new ColorStateList(states, colors);
-                        progressBar.setIndeterminateTintList(colorStateList);
-                    }
-                }
-
-                centeredLayout.addView(progressBar);
-
-                spinnerDialog.getWindow().clearFlags(WindowManager.LayoutParams.FLAG_DIM_BEHIND);
-                spinnerDialog.getWindow().setBackgroundDrawable(new ColorDrawable(Color.TRANSPARENT));
-
-                spinnerDialog.show();
-                spinnerDialog.setContentView(centeredLayout);
-            }
-        });
-    }
-
-    private void spinnerStop() {
-        cordova.getActivity().runOnUiThread(new Runnable() {
-            public void run() {
-                if (spinnerDialog != null && spinnerDialog.isShowing()) {
-                    spinnerDialog.dismiss();
-                    spinnerDialog = null;
-                }
-            }
-        });
-    }
 }
